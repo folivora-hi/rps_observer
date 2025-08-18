@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API 測試</title>
+</head>
+<body>
+    <h1>RPS API 測試</h1>
+    <button onclick="testSimulate()">測試模擬</button>
+    <button onclick="testObserver()">測試觀察者</button>
+    <button onclick="testPlayer()">測試玩家</button>
+    <button onclick="testEvaluate()">測試評估</button>
+    <div id="result"></div>
+
+    <script>
+        async function testSimulate() {
+            try {
+                const response = await fetch('/api/v1/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        s1: { kind: "frequency" },
+                        s2: { kind: "random" },
+                        rounds: 1000
+                    })
+                });
+                const data = await response.json();
+                document.getElementById('result').innerHTML = '<h3>模擬結果:</h3><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } catch (error) {
+                document.getElementById('result').innerHTML = '<h3>錯誤:</h3><pre>' + error.message + '</pre>';
+            }
+        }
+
+        async function testObserver() {
+            try {
+                const response = await fetch('/api/v1/observer/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        description_s1: "頻率策略",
+                        description_s2: "隨機策略"
+                    })
+                });
+                const data = await response.json();
+                document.getElementById('result').innerHTML = '<h3>觀察者預測:</h3><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } catch (error) {
+                document.getElementById('result').innerHTML = '<h3>錯誤:</h3><pre>' + error.message + '</pre>';
+            }
+        }
+
+        async function testPlayer() {
+            try {
+                const response = await fetch('/api/v1/player/act', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        history: [[0, 1], [1, 2], [2, 0]],
+                        k_window: 3
+                    })
+                });
+                const data = await response.json();
+                document.getElementById('result').innerHTML = '<h3>玩家行動:</h3><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } catch (error) {
+                document.getElementById('result').innerHTML = '<h3>錯誤:</h3><pre>' + error.message + '</pre>';
+            }
+        }
+
+        async function testEvaluate() {
+            try {
+                const response = await fetch('/api/v1/evaluate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        pred: [0.3, 0.4, 0.3],
+                        gt: [0.35, 0.35, 0.3]
+                    })
+                });
+                const data = await response.json();
+                document.getElementById('result').innerHTML = '<h3>評估結果:</h3><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } catch (error) {
+                document.getElementById('result').innerHTML = '<h3>錯誤:</h3><pre>' + error.message + '</pre>';
+            }
+        }
+    </script>
+</body>
+</html>

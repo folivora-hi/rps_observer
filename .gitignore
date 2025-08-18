@@ -1,0 +1,5 @@
+rps/
+node_modules/
+backend/.env
+backend/logs/
+backend/.DS_Store
