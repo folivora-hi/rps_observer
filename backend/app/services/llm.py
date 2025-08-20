@@ -131,6 +131,64 @@ def _parse_identify_json(content: str) -> Optional[dict]:
     return None
 
 
+def call_openai_o3_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
+    """使用 OpenAI o3（Responses API）進行策略辨識（返回解析後 dict 或 None）。"""
+    if not settings.OPENAI_API_KEY:
+        return None
+    prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
+    if settings.LLM_LOG_PROMPT:
+        try:
+            print("[LLM PROMPT - OpenAI o3 IDENT]".ljust(28, ' '), "\n" + prompt)
+            _write_prompt_file(prompt, provider="openai_o3_ident")
+        except Exception:
+            pass
+    client = _ensure_openai_client(api_key=settings.OPENAI_API_KEY)
+    try:
+        # 使用 Responses API 呼叫 o3
+        resp = client.chat.completions.create(
+            model="o3",
+            messages=[
+                {"role": "system", "content": "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        # 原始 JSON 回應
+        print(resp)
+        # 嘗試多種方式取回純文字內容
+        content = getattr(resp.choices[0].message, "content", None)
+        if not content:
+            try:
+                outputs = getattr(resp, "output", None) or getattr(resp, "outputs", None)
+                if outputs:
+                    # 常見結構：outputs[0].content[0].text
+                    first = outputs[0]
+                    cont_list = getattr(first, "content", None)
+                    if cont_list and len(cont_list) > 0:
+                        content = getattr(cont_list[0], "text", None) or content
+            except Exception:
+                pass
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - OpenAI o3 IDENT]".ljust(30, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="openai_o3_ident_resp")
+            except Exception:
+                pass
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - OpenAI o3 IDENT]".ljust(30, ' '), parsed)
+            except Exception:
+                pass
+        return parsed
+    except Exception as e:
+        # 若 o3 失敗，不做跨提供者回退；維持嚴格提供者
+        import traceback
+        print("OpenAI o3 call failed:", e)
+        traceback.print_exc()
+        return None
+
+
 def call_openai_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
     """使用 OpenAI 進行策略辨識（返回解析後 dict 或 None）。"""
     if not settings.OPENAI_API_KEY:
@@ -278,6 +336,8 @@ def identify_from_history(strategy_catalog: dict, history: list[dict], model: Op
     if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free", "openrouter"):
         print("call_openrouter_for_identify")
         parsed = call_openrouter_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    elif selected in ("o3", "o3-mini"):
+        parsed = call_openai_o3_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
     elif selected in ("4o-mini", "gpt-4o-mini", "openai", "gpt"):
         parsed = call_openai_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
     else:

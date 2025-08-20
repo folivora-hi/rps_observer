@@ -212,7 +212,8 @@ const ObserverDemo = () => {
               value={model}
               onChange={(e) => setModel(e.target.value)}
             >
-              <option value="gpt-4o-mini">GPT-4o mini (OpenAI)</option>
+              <option value="o3">GPT o3 (OpenAI)</option>
+              <option value="gpt-4o-mini">GPT 4o-mini (OpenAI)</option>
               <option value="deepseek">DeepSeek (OpenRouter)</option>
             </select>
           </div>
