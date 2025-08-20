@@ -81,13 +81,18 @@ def _build_identify_prompt(strategy_catalog: dict, history: list[dict], include_
         "[Strategy Catalog]\n"
         + strategy_def_json + "\n"
         + "\n".join(notes_lines) + "\n\n"
-        + "[Match History]\n"
+        + "[Game History]\n"
         + history_json + "\n"
         + "Notes: an array, each element contains:\n"
         + "- move1: Player 1 move (0=Rock, 1=Paper, 2=Scissors)\n"
         + "- move2: Player 2 move (0=Rock, 1=Paper, 2=Scissors)\n"
         + "- result: from Player 1 perspective (1=win, 0=draw, -1=loss)\n\n"
-        + "Output ONLY the following JSON and nothing else.\n\n"
+        + "Think step by step:\n"
+        + "1. Compute approximate move frequencies for Player 1.\n"
+        + "2. Match Player 1’s distribution to the closest catalog strategy.\n"
+        + "3. Do the same for Player 2.\n"
+        + "4. Estimate confidence.\n"
+        + "5. Output ONLY the following JSON and nothing else.\n"
     )
     if include_reasoning:
         return base + (
