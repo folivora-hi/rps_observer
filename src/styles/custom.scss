@@ -1,0 +1,14 @@
+// 1. Bootstrap 基本工具
+@import "bootstrap/scss/functions";
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/maps";        // <<=== 很重要，補上
+@import "bootstrap/scss/mixins";
+@import "bootstrap/scss/utilities";   // 放在 mixins 之後
+
+// 2. Reboot (reset & 基礎樣式)
+@import "bootstrap/scss/reboot";
+
+// 3. 你需要的元件
+@import "bootstrap/scss/buttons";  
+@import "bootstrap/scss/forms";    
+@import "bootstrap/scss/containers";

@@ -29,7 +29,6 @@ class SimulateRequest(BaseModel):
     s1: StrategySpec
     s2: StrategySpec
     rounds: int = 10000
-    k_window: Optional[int] = None
 
 class SimulateResponse(BaseModel):
     win: float

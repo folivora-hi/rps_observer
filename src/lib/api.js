@@ -32,15 +32,6 @@ export async function simulate(body) {
   return res.json();
 }
 
-export async function observerPredict(body) {
-  const res = await fetch('/api/v1/observer/predict', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export async function observerRun(body) {
   const res = await fetch('/api/v1/observer/run', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -50,8 +41,8 @@ export async function observerRun(body) {
   return res.json();
 }
 
-// --- 新增：以 SSE 串流逐輪獲取觀察結果 ---
-export function openObserverStream({ true_strategy1, true_strategy2, rounds = 50, warmup_rounds = 10, k_window, model = 'deepseek' }) {
+// --- 以 SSE 串流逐輪獲取觀察結果 ---
+export function openObserverStream({ true_strategy1, true_strategy2, rounds = 50, warmup_rounds = 10, history_limit, reasoning_interval, model = 'deepseek' }) {
   const params = new URLSearchParams({
     true_strategy1,
     true_strategy2,
@@ -59,7 +50,8 @@ export function openObserverStream({ true_strategy1, true_strategy2, rounds = 50
     warmup_rounds: String(warmup_rounds),
     model: String(model || ''),
   });
-  if (k_window != null && k_window !== '') params.set('k_window', String(k_window));
+  if (history_limit != null && history_limit !== '') params.set('history_limit', String(history_limit));
+  if (reasoning_interval != null && reasoning_interval !== '') params.set('reasoning_interval', String(reasoning_interval));
   const url = `/api/v1/observer/stream?${params.toString()}`;
   return new EventSource(url);
 }
@@ -82,7 +74,7 @@ export async function evaluate(body) {
   return res.json();
 }
 
-// --- 新增：策略相關 API ---
+// --- 策略相關 API ---
 export async function getAllStrategies() {
   const res = await fetch('/api/v1/strategies/all', {
     method: 'GET', headers: { 'Content-Type': 'application/json' },

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import RPSCalculator from './components/RPSCalculator';
 import ObserverDemo from './components/ObserverDemo';
-import './index.css';
+// import './styles/custom.scss';
+import './styles/index.css';
 
 function App() {
   const [page, setPage] = useState('observer'); // observer | calculator
@@ -22,10 +23,10 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      {/* 簡易導覽列：可切換 Observer 與 RPS Calculator */}
+      {/* Simple nav: switch between Observer and RPS Calculator */}
       <nav className="bg-white shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-          <div className="text-lg font-semibold mr-4">RPS Observer</div>
+          <div className="text-lg font-semibold mr-10 ">Page Change:  </div>
           <NavButton id="observer" label="Observer" />
           <NavButton id="calculator" label="RPS Calculator" />
         </div>

@@ -16,5 +16,5 @@ def build_strategy(spec):
 def simulate_endpoint(req: SimulateRequest):
     s1 = build_strategy(req.s1)
     s2 = build_strategy(req.s2)
-    res = simulate(s1, s2, rounds=req.rounds, k_window=req.k_window)
+    res = simulate(s1, s2, rounds=req.rounds)
     return SimulateResponse(**res)

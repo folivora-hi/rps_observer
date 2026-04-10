@@ -36,30 +36,32 @@ def beats(a: int, b: int) -> int:
 
 # --- 靜態策略 A-P ---
 BASE_STRATEGIES = {
-    'A': {'name': 'A (純剪刀)', 'rock': 0, 'paper': 0, 'scissors': 1},
-    'B': {'name': 'B (純石頭)', 'rock': 1, 'paper': 0, 'scissors': 0},
-    'C': {'name': 'C (純布)', 'rock': 0, 'paper': 1, 'scissors': 0},
-    'D': {'name': 'D (隨機)', 'rock': 0.333, 'paper': 0.333, 'scissors': 0.334},
-    'E': {'name': 'E (石頭+布)', 'rock': 0.5, 'paper': 0.5, 'scissors': 0},
-    'F': {'name': 'F (石頭+剪刀)', 'rock': 0.5, 'paper': 0, 'scissors': 0.5},
-    'G': {'name': 'G (布+剪刀)', 'rock': 0, 'paper': 0.5, 'scissors': 0.5},
-    'H': {'name': 'H (偏愛石頭)', 'rock': 0.5, 'paper': 0.25, 'scissors': 0.25},
-    'I': {'name': 'I (偏愛布)', 'rock': 0.25, 'paper': 0.5, 'scissors': 0.25},
-    'J': {'name': 'J (偏愛剪刀)', 'rock': 0.25, 'paper': 0.25, 'scissors': 0.5},
-    'K': {'name': 'K (石頭主布次)', 'rock': 0.5, 'paper': 0.333, 'scissors': 0.167},
-    'L': {'name': 'L (石頭主剪次)', 'rock': 0.5, 'paper': 0.167, 'scissors': 0.333},
-    'M': {'name': 'M (布主石次)', 'rock': 0.333, 'paper': 0.5, 'scissors': 0.167},
-    'N': {'name': 'N (布主剪次)', 'rock': 0.167, 'paper': 0.5, 'scissors': 0.333},
-    'O': {'name': 'O (剪主石次)', 'rock': 0.333, 'paper': 0.167, 'scissors': 0.5},
-    'P': {'name': 'P (剪主布次)', 'rock': 0.167, 'paper': 0.333, 'scissors': 0.5},
+    'A': {'name': 'A (Pure Scissors)', 'rock': 0, 'paper': 0, 'scissors': 1},
+    'B': {'name': 'B (Pure Rock)', 'rock': 1, 'paper': 0, 'scissors': 0},
+    'C': {'name': 'C (Pure Paper)', 'rock': 0, 'paper': 1, 'scissors': 0},
+    'D': {'name': 'D (Random)', 'rock': 0.333, 'paper': 0.333, 'scissors': 0.334},
+    'E': {'name': 'E (Rock + Paper)', 'rock': 0.5, 'paper': 0.5, 'scissors': 0},
+    'F': {'name': 'F (Rock + Scissors)', 'rock': 0.5, 'paper': 0, 'scissors': 0.5},
+    'G': {'name': 'G (Paper + Scissors)', 'rock': 0, 'paper': 0.5, 'scissors': 0.5},
+    'H': {'name': 'H (Rock-biased)', 'rock': 0.5, 'paper': 0.25, 'scissors': 0.25},
+    'I': {'name': 'I (Paper-biased)', 'rock': 0.25, 'paper': 0.5, 'scissors': 0.25},
+    'J': {'name': 'J (Scissors-biased)', 'rock': 0.25, 'paper': 0.25, 'scissors': 0.5},
+    'K': {'name': 'K (Rock-primary, Paper-secondary)', 'rock': 0.5, 'paper': 0.333, 'scissors': 0.167},
+    'L': {'name': 'L (Rock-primary, Scissors-secondary)', 'rock': 0.5, 'paper': 0.167, 'scissors': 0.333},
+    'M': {'name': 'M (Paper-primary, Rock-secondary)', 'rock': 0.333, 'paper': 0.5, 'scissors': 0.167},
+    'N': {'name': 'N (Paper-primary, Scissors-secondary)', 'rock': 0.167, 'paper': 0.5, 'scissors': 0.333},
+    'O': {'name': 'O (Scissors-primary, Rock-secondary)', 'rock': 0.333, 'paper': 0.167, 'scissors': 0.5},
+    'P': {'name': 'P (Scissors-primary, Paper-secondary)', 'rock': 0.167, 'paper': 0.333, 'scissors': 0.5},
 }
+
 
 # --- 動態策略 X/Y/Z ---
 DYNAMIC_STRATEGIES = {
-    'X': {'name': 'X (贏前一拳)'},
-    'Y': {'name': 'Y (輸前一拳)'},
-    'Z': {'name': 'Z (跟前一拳)'},
+    'X': {'name': 'X', 'rule': 'Play the move that counters the opponent’s previous move(e.g., if the opponent favored Scissors in the last round, I will favor Rock; and so on).'},
+    'Y': {'name': 'Y', 'rule': 'Play the move that is counter to the opponent’s previous move(e.g., if the opponent favored Scissors in the last round, I will favor Paper; and so on).'},
+    'Z': {'name': 'Z', 'rule': 'Play the same move as the opponent’s previous move(e.g., if the opponent favored Scissors in the last round, I will also favor Scissors; and so on).'},
 }
+
 
 def resolve_dist(key: str, opp_dist: Dict[str, float]) -> Dict[str, float]:
     """解析動態策略的分佈"""

@@ -6,5 +6,5 @@ router = APIRouter(prefix="/player", tags=["player"])
 
 @router.post("/act", response_model=PlayerActResp)
 def player_act(req: PlayerActReq):
-    move, rationale = decide_next_move(req.history, req.k_window, req.belief)
+    move, rationale = decide_next_move(req.history, belief=req.belief)
     return PlayerActResp(move=move, rationale=rationale)

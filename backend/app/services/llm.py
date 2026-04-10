@@ -9,11 +9,7 @@ LLM 服務整合模組
 - 支援不同 prompt 風格的預測
 
 核心功能：
-- estimate_payoff(): 主要預測函數，整合 OpenAI API
-- call_openai_for_prediction(): OpenAI API 調用
-- analyze_strategy(): 策略描述分析
-- predict_matchup(): 基於特徵的預測計算
-- fallback_prediction(): 備用預測邏輯
+- identify_from_history(): 歷史辨識（identify-only）
 
 支援的 prompt 風格：
 - analytical: 詳細分析風格
@@ -26,191 +22,69 @@ LLM 服務整合模組
 
 from ..core.config import settings
 from typing import Optional
-import random
 import json
 import os
-from typing import Optional
 from dotenv import load_dotenv
+from google import genai
+from .api_key_manager import get_available_api_key, mark_api_key_error, mark_api_key_success
+
+
+# 延遲載入 google genai 客戶端，避免缺依賴時整體崩潰
+_gemini_client = None
+
+# 延遲載入 anthropic 客戶端，避免缺依賴時整體崩潰
+_anthropic_client = None
 
 load_dotenv()
 
-# 延遲載入 openai 客戶端，避免缺依賴時整體崩潰
-_openai_client = None
+# 註：不再使用全局 OpenAI 客戶端，每次調用時創建新客戶端
 
 
 def _ensure_openai_client(base_url: Optional[str] = None, api_key: Optional[str] = None):
-    global _openai_client
-    if _openai_client is None:
-        try:
-            from openai import OpenAI
-        except Exception as e:
-            raise RuntimeError(f"openai 套件未安裝或導入失敗: {e}")
-        _openai_client = OpenAI(base_url=base_url, api_key=api_key)
-    return _openai_client
-
-
-def analyze_strategy(description: str) -> dict:
-    """分析策略描述，返回策略特徵"""
-    description = description.lower()
-    
-    # 基本策略特徵分析
-    features = {
-        'rock_freq': 0.33,
-        'paper_freq': 0.33, 
-        'scissors_freq': 0.33,
-        'is_fixed': False,
-        'is_random': False,
-        'is_reactive': False,
-        'aggressive': 0.5
-    }
-    
-    # 檢測固定策略
-    if any(word in description for word in ['固定', 'always', 'pure', 'only', '100%']):
-        if '石頭' in description or 'rock' in description:
-            features.update({'rock_freq': 1.0, 'paper_freq': 0.0, 'scissors_freq': 0.0, 'is_fixed': True})
-        elif '布' in description or 'paper' in description:
-            features.update({'rock_freq': 0.0, 'paper_freq': 1.0, 'scissors_freq': 0.0, 'is_fixed': True})
-        elif '剪刀' in description or 'scissors' in description:
-            features.update({'rock_freq': 0.0, 'paper_freq': 0.0, 'scissors_freq': 1.0, 'is_fixed': True})
-    
-    # 檢測隨機策略
-    elif any(word in description for word in ['隨機', 'random', 'randomly']):
-        features.update({'is_random': True})
-    
-    # 檢測反應策略
-    elif any(word in description for word in ['反應', 'reactive', 'counter', '回應']):
-        features.update({'is_reactive': True, 'aggressive': 0.7})
-    
-    # 檢測頻率策略
-    elif any(word in description for word in ['頻率', 'frequency', 'most', 'common']):
-        features.update({'aggressive': 0.6})
-    
-    # 檢測偏好
-    if '偏愛' in description or 'prefer' in description:
-        if '石頭' in description or 'rock' in description:
-            features.update({'rock_freq': 0.5, 'paper_freq': 0.25, 'scissors_freq': 0.25})
-        elif '布' in description or 'paper' in description:
-            features.update({'rock_freq': 0.25, 'paper_freq': 0.5, 'scissors_freq': 0.25})
-        elif '剪刀' in description or 'scissors' in description:
-            features.update({'rock_freq': 0.25, 'paper_freq': 0.25, 'scissors_freq': 0.5})
-    
-    return features
-
-
-def predict_matchup(s1_features: dict, s2_features: dict) -> dict:
-    """根據兩個策略的特徵預測對戰結果"""
-    
-    # 計算期望勝率
-    s1_win = 0.0
-    s1_loss = 0.0
-    s1_draw = 0.0
-    
-    # 石頭剪刀布的勝負矩陣
-    s1_win += s1_features['rock_freq'] * s2_features['scissors_freq']  # 石頭勝剪刀
-    s1_win += s1_features['paper_freq'] * s2_features['rock_freq']     # 布勝石頭
-    s1_win += s1_features['scissors_freq'] * s2_features['paper_freq'] # 剪刀勝布
-    
-    s1_loss += s1_features['rock_freq'] * s2_features['paper_freq']    # 石頭敗布
-    s1_loss += s1_features['paper_freq'] * s2_features['scissors_freq'] # 布敗剪刀
-    s1_loss += s1_features['scissors_freq'] * s2_features['rock_freq']  # 剪刀敗石頭
-    
-    s1_draw += s1_features['rock_freq'] * s2_features['rock_freq']     # 石頭平石頭
-    s1_draw += s1_features['paper_freq'] * s2_features['paper_freq']   # 布平布
-    s1_draw += s1_features['scissors_freq'] * s2_features['scissors_freq'] # 剪刀平剪刀
-    
-    # 添加一些隨機性來模擬不確定性
-    noise = 0.05
-    s1_win = max(0.0, min(1.0, s1_win + random.uniform(-noise, noise)))
-    s1_loss = max(0.0, min(1.0, s1_loss + random.uniform(-noise, noise)))
-    s1_draw = max(0.0, min(1.0, s1_draw + random.uniform(-noise, noise)))
-    
-    # 正規化
-    total = s1_win + s1_loss + s1_draw
-    if total > 0:
-        s1_win /= total
-        s1_loss /= total
-        s1_draw /= total
-    
-    return {
-        'win': round(s1_win, 3),
-        'loss': round(s1_loss, 3),
-        'draw': round(s1_draw, 3)
-    }
-
-
-def estimate_confidence(s1_features: dict, s2_features: dict, prediction: dict) -> float:
-    """估計預測的信心度"""
-    base_confidence = 0.6
-    
-    # 如果策略很明確，提高信心度
-    if s1_features['is_fixed'] or s2_features['is_fixed']:
-        base_confidence += 0.2
-    
-    # 如果預測很極端（高勝率或高敗率），提高信心度
-    max_prob = max(prediction['win'], prediction['loss'], prediction['draw'])
-    if max_prob > 0.7:
-        base_confidence += 0.1
-    
-    # 如果兩個策略相似，降低信心度
-    if (abs(s1_features['rock_freq'] - s2_features['rock_freq']) < 0.1 and
-        abs(s1_features['paper_freq'] - s2_features['paper_freq']) < 0.1):
-        base_confidence -= 0.1
-    
-    return min(0.95, max(0.3, base_confidence))
-
-
-def _build_prompt(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> str:
-    if prompt_style == "analytical":
-        return f"""
-你是一個石頭剪刀布遊戲的專家分析師。請分析以下兩個策略的對戰結果：
-
-策略1: {description_s1}
-策略2: {description_s2}
-
-請分析這兩個策略的特徵，並預測策略1對戰策略2的結果。
-請以JSON格式回答，包含以下欄位：
-- win: 策略1獲勝的機率 (0-1之間的小數)
-- loss: 策略1失敗的機率 (0-1之間的小數)  
-- draw: 平手的機率 (0-1之間的小數)
-- confidence: 你對這個預測的信心度 (0-1之間的小數)
-- reasoning: 簡短的推理過程
-
-請確保 win + loss + draw = 1
-"""
-    else:
-        return f"""
-在石頭剪刀布遊戲中，策略1是"{description_s1}"，策略2是"{description_s2}"。
-
-請預測策略1對戰策略2的結果，並以JSON格式回答：
-{{
-  "win": 策略1獲勝機率,
-  "loss": 策略1失敗機率,
-  "draw": 平手機率,
-  "confidence": 預測信心度,
-  "reasoning": "推理過程"
-}}
-"""
-
-
-def _parse_json_from_text(content: str) -> Optional[dict]:
+    """創建新的 OpenAI 客戶端，避免全局單例導致的參數衝突"""
     try:
-        start = content.find('{')
-        end = content.rfind('}') + 1
-        if start != -1 and end > start:
-            data = json.loads(content[start:end])
-            total = data.get('win', 0) + data.get('loss', 0) + data.get('draw', 0)
-            if total > 0:
-                data['win'] = round(data.get('win', 0) / total, 3)
-                data['loss'] = round(data.get('loss', 0) / total, 3)
-                data['draw'] = round(data.get('draw', 0) / total, 3)
-            data['confidence'] = min(1.0, max(0.0, data.get('confidence', 0.6)))
-            return data
-    except Exception:
-        pass
-    return None
+        from openai import OpenAI
+    except Exception as e:
+        raise RuntimeError(f"openai 套件未安裝或導入失敗: {e}")
+    
+    # 每次都創建新的客戶端，避免全局單例的參數衝突
+    client_kwargs = {}
+    if base_url is not None:
+        client_kwargs['base_url'] = base_url
+    if api_key is not None:
+        client_kwargs['api_key'] = api_key
+    
+    return OpenAI(**client_kwargs)
 
 
-def _build_identify_prompt(strategy_catalog: dict, history: list[dict]) -> str:
+def _ensure_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        try:
+            from google import genai
+        except ImportError:
+            raise RuntimeError("google-genai 套件未安裝，請執行: pip install google-genai")
+        except Exception as e:
+            raise RuntimeError(f"google-genai 套件導入失敗: {e}")
+        _gemini_client = genai.Client()
+    return _gemini_client
+
+
+def _ensure_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        try:
+            import anthropic
+        except ImportError:
+            raise RuntimeError("anthropic 套件未安裝，請執行: pip install anthropic")
+        except Exception as e:
+            raise RuntimeError(f"anthropic 套件導入失敗: {e}")
+        _anthropic_client = anthropic.Anthropic()
+    return _anthropic_client
+
+
+
+def _build_identify_prompt(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> str:
     """構建用於策略辨識的提示，包含：
     - 完整的策略定義（靜態策略：出拳分佈；動態策略：規則說明）
     - 每輪玩家1/2的出拳與結果（history）
@@ -225,32 +99,58 @@ def _build_identify_prompt(strategy_catalog: dict, history: list[dict]) -> str:
     except Exception:
         history_json = str(history)
 
-    return (
-        "你是一位石頭剪刀布觀察者，你的任務是根據策略定義表與對戰歷史，判斷玩家1與玩家2最可能使用的策略。\n\n"
-        "[策略定義表]\n"
+    # 檢查是否有動態策略
+    has_dynamic = False
+    try:
+        for v in (strategy_catalog or {}).values():
+            if isinstance(v, dict) and (v.get('type') == 'dynamic'):
+                has_dynamic = True
+                break
+    except Exception:
+        pass
+
+    # 根據是否有動態策略決定說明文字
+    notes_lines = [
+        "Notes:",
+        "- Static strategies (type=static): fixed move distribution dist={rock,paper,scissors}.",
+    ]
+    if has_dynamic:
+        notes_lines.append("- Dynamic strategies (type=dynamic): depend on opponent's previous move; field 'rule' describes the behavior.")
+
+    base = (
+        "[Strategy Catalog]\n"
         + strategy_def_json + "\n"
-        "# 說明：\n"
-        "# - 靜態策略 (type=static)：固定出拳分佈 dist={rock,paper,scissors}。\n"
-        "# - 動態策略 (type=dynamic)：根據對手上一輪行為決定，rule 描述規則。\n\n"
-        "[對戰歷史]\n"
+        + "\n".join(notes_lines) + "\n\n"
+        + "[Game History]\n"
         + history_json + "\n"
-        "# 說明：陣列，每一元素包含：\n"
-        "#   move1 = 玩家1出拳 (0=石頭,1=布,2=剪刀)\n"
-        "#   move2 = 玩家2出拳 (0=石頭,1=布,2=剪刀)\n"
-        "#   result = 從玩家1視角：1=勝,0=平,-1=敗\n\n"
-        "請你：\n"
-        "1) 判斷玩家1、玩家2各自最可能的策略代號（從策略定義表中選）。\n"
-        "2) 給出 3~5 個關鍵推理短語（不超過100字，用分號隔開）。\n"
-        "3) 僅輸出下列 JSON，勿輸出其它文字。\n\n"
-        "{\n"
-        "  \"guess_s1_code\": \"<代號，如 'H'>\",\n"
-        "  \"guess_s1_name\": \"<策略名稱，如 'H (偏愛石頭)'>\",\n"
-        "  \"guess_s2_code\": \"<代號，如 'Z'>\",\n"
-        "  \"guess_s2_name\": \"<策略名稱，如 'Z (跟前一拳)'>\",\n"
-        "  \"confidence\": <0~1的小數>,\n"
-        "  \"reasoning\": \"<3~5個短語，用分號隔開>\"\n"
-        "}\n"
+        + "Notes: an array, each element contains:\n"
+        + "- move1: Player 1 move (0=Rock, 1=Paper, 2=Scissors)\n"
+        + "- move2: Player 2 move (0=Rock, 1=Paper, 2=Scissors)\n"
+        + "- result: from Player 1 perspective (1=win, 0=draw, -1=loss)\n\n"
+        + "Think step by step:\n"
+        + "1. Compute approximate move frequencies for Player 1.\n"
+        + "2. Match Player 1’s distribution to the closest catalog strategy.\n"
+        + "3. Do the same for Player 2.\n"
+        + "4. Estimate confidence.\n"
+        + "5. Output ONLY the following JSON and nothing else.\n"
     )
+    if include_reasoning:
+        return base + (
+            "{\n"
+            "  \"guess_s1\": \"<code like 'H'>\",\n"
+            "  \"guess_s2\": \"<code like 'Z'>\",\n"
+            "  \"confidence\": <decimal between 0 and 1>,\n"
+            "  \"reasoning\": \"<3-5 phrases; separated by semicolons>\"\n"
+            "}\n"
+        )
+    else:
+        return base + (
+            "{\n"
+            "  \"guess_s1\": \"<code like 'H'>\",\n"
+            "  \"guess_s2\": \"<code like 'Z'>\",\n"
+            "  \"confidence\": <decimal between 0 and 1>\n"
+            "}\n"
+        )
 
 
 def _parse_identify_json(content: str) -> Optional[dict]:
@@ -261,15 +161,13 @@ def _parse_identify_json(content: str) -> Optional[dict]:
         if start != -1 and end > start:
             data = json.loads(content[start:end])
             result = {
-                's1_code': (data.get('guess_s1_code') or '').strip(),
-                's2_code': (data.get('guess_s2_code') or '').strip(),
-                's1_name': (data.get('guess_s1_name') or '').strip(),
-                's2_name': (data.get('guess_s2_name') or '').strip(),
+                'guess_s1': (data.get('guess_s1') or '').strip(),
+                'guess_s2': (data.get('guess_s2') or '').strip(),
                 'confidence': float(data.get('confidence') or 0.6),
                 'reasoning': (data.get('reasoning') or '').strip(),
             }
             # 合法性檢查（至少要有代號）
-            if result['s1_code'] and result['s2_code']:
+            if result['guess_s1'] and result['guess_s2']:
                 # 夾在 0~1
                 result['confidence'] = max(0.0, min(1.0, result['confidence']))
                 return result
@@ -278,40 +176,141 @@ def _parse_identify_json(content: str) -> Optional[dict]:
     return None
 
 
-def call_openai_for_identify(strategy_catalog: dict, history: list[dict]) -> Optional[dict]:
-    """使用 OpenAI 進行策略辨識（返回解析後 dict 或 None）。"""
-    if not settings.OPENAI_API_KEY:
+def call_openai_o3_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
+    """使用 OpenAI o3（Responses API）進行策略辨識（返回解析後 dict 或 None）。"""
+    api_key = get_available_api_key("openai")
+    if not api_key:
         return None
-    prompt = _build_identify_prompt(strategy_catalog, history)
+    prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
+    if settings.LLM_LOG_PROMPT:
+        try:
+            print("[LLM PROMPT - OpenAI o3 IDENT]".ljust(28, ' '), "\n" + prompt)
+            _write_prompt_file(prompt, provider="openai_o3_ident")
+        except Exception:
+            pass
+    client = _ensure_openai_client(api_key=api_key)
+    try:
+        # 使用 Responses API 呼叫 o3
+        resp = client.chat.completions.create(
+            model="o3",
+            messages=[
+                {"role": "system", "content": "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        # 原始 JSON 回應
+        print(resp)
+        # 嘗試多種方式取回純文字內容
+        content = getattr(resp.choices[0].message, "content", None)
+        if not content:
+            try:
+                outputs = getattr(resp, "output", None) or getattr(resp, "outputs", None)
+                if outputs:
+                    # 常見結構：outputs[0].content[0].text
+                    first = outputs[0]
+                    cont_list = getattr(first, "content", None)
+                    if cont_list and len(cont_list) > 0:
+                        content = getattr(cont_list[0], "text", None) or content
+            except Exception:
+                pass
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - OpenAI o3 IDENT]".ljust(30, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="openai_o3_ident_resp")
+            except Exception:
+                pass
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - OpenAI o3 IDENT]".ljust(30, ' '), parsed)
+            except Exception:
+                pass
+        # 標記 API 金鑰成功使用
+        mark_api_key_success("openai", api_key)
+        return parsed
+    except Exception as e:
+        # 標記 API 金鑰錯誤
+        mark_api_key_error("openai", api_key, e)
+        import traceback
+        print("OpenAI o3 call failed:", e)
+        traceback.print_exc()
+        return None
+
+
+def call_openai_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
+    """使用 OpenAI 進行策略辨識（返回解析後 dict 或 None）。"""
+    api_key = get_available_api_key("openai")
+    if not api_key:
+        return None
+    prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
     if settings.LLM_LOG_PROMPT:
         try:
             print("[LLM PROMPT - OpenAI IDENT]".ljust(24, ' '), "\n" + prompt)
             _write_prompt_file(prompt, provider="openai_ident")
         except Exception:
             pass
-    client = _ensure_openai_client(api_key=settings.OPENAI_API_KEY)
+    client = _ensure_openai_client(api_key=api_key)
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "你是一個石頭剪刀布遊戲的觀察與辨識專家。"},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only."
+                    )
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
-            max_tokens=400,
+            max_tokens=800,
+            response_format={"type": "json_object"},
         )
-        content = resp.choices[0].message.content
-        return _parse_identify_json(content)
-    except Exception:
+        # 原始 JSON 回應
+        print(resp)
+        content = getattr(resp.choices[0].message, "content", None)
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - OpenAI IDENT]".ljust(28, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="openai_ident_resp")
+            except Exception:
+                pass
+        # 補充列印 finish_reason / usage
+        if settings.LLM_LOG_PROMPT:
+            try:
+                fr = getattr(resp.choices[0], "finish_reason", None)
+                usage = getattr(resp, "usage", None)
+                print("[LLM META     - OpenAI IDENT]".ljust(28, ' '), {"finish_reason": fr, "usage": getattr(usage, "model_dump", lambda: usage)() if hasattr(usage, "model_dump") else usage})
+            except Exception:
+                pass
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - OpenAI IDENT]".ljust(28, ' '), parsed)
+            except Exception:
+                pass
+        # 標記 API 金鑰成功使用
+        mark_api_key_success("openai", api_key)
+        return parsed
+    except Exception as e:
+        # 標記 API 金鑰錯誤
+        mark_api_key_error("openai", api_key, e)
+        import traceback
+        print("OpenAI call failed:", e)
+        traceback.print_exc()
         return None
 
 
-def call_openrouter_for_identify(strategy_catalog: dict, history: list[dict]) -> Optional[dict]:
+
+def call_openrouter_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
     """使用 OpenRouter 的 DeepSeek 進行策略辨識（返回解析後 dict 或 None）。"""
     api_key = os.getenv("OPENROUTER_API_KEY")
+    print("api_key", api_key is not None)
     if not api_key:
         return None
-    prompt = _build_identify_prompt(strategy_catalog, history)
+    
+    prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
     if settings.LLM_LOG_PROMPT:
         try:
             print("[LLM PROMPT - OpenRouter IDENT]".ljust(24, ' '), "\n" + prompt)
@@ -319,134 +318,326 @@ def call_openrouter_for_identify(strategy_catalog: dict, history: list[dict]) ->
         except Exception:
             pass
     try:
+        print("call_openrouter_for_identify - try")
         from openai import OpenAI
         client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
         resp = client.chat.completions.create(
             model="deepseek/deepseek-r1-0528:free",
+            # model="deepseek/deepseek-chat-v3-0324:free",
             messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only."
+                    )
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
-            max_tokens=400,
+            max_tokens=800,
             extra_headers={
                 "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", ""),
                 "X-Title": os.getenv("OPENROUTER_SITE_NAME", "RPS Observer"),
             },
         )
-        content = resp.choices[0].message.content
-        return _parse_identify_json(content)
-    except Exception:
+        # 原始 JSON 回應
+        # 某些模型的 content 可能為 None，嘗試從 raw_json 再解析
+        
+        content = getattr(resp.choices[0].message, "content", None)
+        print("content", content)
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - OpenRouter IDENT]".ljust(28, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="openrouter_ident_resp")
+            except Exception:
+                pass
+        # 補充列印 finish_reason / usage
+        if settings.LLM_LOG_PROMPT:
+            try:
+                fr = getattr(resp.choices[0], "finish_reason", None)
+                usage = getattr(resp, "usage", None)
+                print("[LLM META     - OpenRouter IDENT]".ljust(28, ' '), {"finish_reason": fr, "usage": getattr(usage, "model_dump", lambda: usage)() if hasattr(usage, "model_dump") else usage})
+            except Exception:
+                pass
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - OpenRouter IDENT]".ljust(28, ' '), parsed)
+            except Exception:
+                pass
+        return parsed
+    except Exception as e:
+        import traceback
+        print("OpenRouter call failed:", e)
+        traceback.print_exc()
         return None
 
 
-def identify_from_history(strategy_catalog: dict, history: list[dict], model: Optional[str] = None) -> Optional[dict]:
-    """對歷史進行 LLM 辨識。
-    返回 dict: {s1_code, s2_code, s1_name, s2_name, confidence, reasoning} 或 None（失敗）。
-    """
-    selected = (model or '').lower().strip()
-    # 指定模型
-    if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"):
-        res = call_openrouter_for_identify(strategy_catalog, history)
-        if res:
-            return res
-        return call_openai_for_identify(strategy_catalog, history)
-    if selected in ("4o-mini", "gpt-4o-mini", "openai"):
-        res = call_openai_for_identify(strategy_catalog, history)
-        if res:
-            return res
-        return call_openrouter_for_identify(strategy_catalog, history)
-
-    # 未指定時，依環境設定嘗試
-    provider = (settings.MODEL_PROVIDER or "").lower()
-    if provider in ("openai", "gpt-4o-mini"):
-        res = call_openai_for_identify(strategy_catalog, history)
-        if res:
-            return res
-        return call_openrouter_for_identify(strategy_catalog, history)
-    if provider in ("openrouter", "deepseek"):
-        res = call_openrouter_for_identify(strategy_catalog, history)
-        if res:
-            return res
-        return call_openai_for_identify(strategy_catalog, history)
-
-    # 沒有任何可用提供者
-    return None
-
-def call_openai_for_prediction(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> dict:
-    """使用 OpenAI (官方) chat.completions 進行預測"""
-    if not settings.OPENAI_API_KEY:
-        raise ValueError("OpenAI API key not configured")
-
-    prompt = _build_prompt(description_s1, description_s2, prompt_style)
-    # 依環境變數決定是否輸出 prompt 到日誌
+def call_deepseek_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
+    """使用 DeepSeek 官方 API 進行策略辨識（返回解析後 dict 或 None）。"""
+    if not settings.DEEPSEEK_API_KEY:
+        return None
+    
+    prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
     if settings.LLM_LOG_PROMPT:
         try:
-            print("[LLM PROMPT - OpenAI]".ljust(24, ' '), "\n" + prompt)
-            # 檔案輸出
-            _write_prompt_file(prompt, provider="openai")
+            print("[LLM PROMPT - DeepSeek IDENT]".ljust(24, ' '), "\n" + prompt)
+            _write_prompt_file(prompt, provider="deepseek_ident")
         except Exception:
             pass
-    client = _ensure_openai_client(api_key=settings.OPENAI_API_KEY)
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "你是一個石頭剪刀布遊戲分析專家。請提供準確的預測和清晰的推理。"},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,
-        max_tokens=500,
-    )
-    content = resp.choices[0].message.content
-    parsed = _parse_json_from_text(content)
-    if parsed:
-        return parsed
-    return fallback_prediction(description_s1, description_s2)
-
-
-def call_openrouter_deepseek(description_s1: str, description_s2: str, prompt_style: Optional[str] = None) -> dict:
-    """使用 OpenRouter 調用 DeepSeek 模型（.env 版）"""
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        print("⚠️ OpenRouter API key 未設定，改用備用預測邏輯")
-        return fallback_prediction(description_s1, description_s2)
-
-    site_url = os.getenv("OPENROUTER_SITE_URL", "")  # 可留空
-    site_name = os.getenv("OPENROUTER_SITE_NAME", "RPS Observer")
-
-    prompt = _build_prompt(description_s1, description_s2, prompt_style)
-    if settings.LLM_LOG_PROMPT:
-        try:
-            print("[LLM PROMPT - OpenRouter]".ljust(24, ' '), "\n" + prompt)
-            _write_prompt_file(prompt, provider="openrouter")
-        except Exception:
-            pass
-
-    # 實際呼叫 OpenRouter DeepSeek（使用 OpenAI SDK 並指定 base_url）
     try:
+        print("call_deepseek_for_identify - try")
         from openai import OpenAI
-        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+        client = OpenAI(api_key=settings.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
         resp = client.chat.completions.create(
-            model="deepseek/deepseek-r1-0528:free",
+            model="deepseek-reasoner",
             messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only."
+                    )
+                },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3,
-            max_tokens=500,
-            extra_headers={
-                "HTTP-Referer": site_url,
-                "X-Title": site_name,
-            },
+            temperature=0.2,
+            max_tokens=800,
+            stream=False
         )
-        content = resp.choices[0].message.content
-        parsed = _parse_json_from_text(content)
-        if parsed:
-            return parsed
-        return fallback_prediction(description_s1, description_s2)
+        # 原始 JSON 回應
+        print("resp", resp)
+        content = getattr(resp.choices[0].message, "content", None)
+        print("content", content)
+        
+        # DeepSeek Reasoner 可能將內容放在 reasoning_content 中
+        if not content:
+            reasoning_content = getattr(resp.choices[0].message, "reasoning_content", None)
+            if reasoning_content:
+                print("Using reasoning_content instead of content")
+                content = reasoning_content
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - DeepSeek IDENT]".ljust(28, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="deepseek_ident_resp")
+            except Exception:
+                pass
+        # 補充列印 finish_reason / usage
+        if settings.LLM_LOG_PROMPT:
+            try:
+                fr = getattr(resp.choices[0], "finish_reason", None)
+                usage = getattr(resp, "usage", None)
+                print("[LLM META     - DeepSeek IDENT]".ljust(28, ' '), {"finish_reason": fr, "usage": getattr(usage, "model_dump", lambda: usage)() if hasattr(usage, "model_dump") else usage})
+            except Exception:
+                pass
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - DeepSeek IDENT]".ljust(28, ' '), parsed)
+            except Exception:
+                pass
+        return parsed
     except Exception as e:
-        print(f"❌ OpenRouter 調用失敗，使用備用邏輯: {e}")
-        return fallback_prediction(description_s1, description_s2)
+        import traceback
+        print("DeepSeek call failed:", e)
+        traceback.print_exc()
+        return None
 
-# --- 新增：將 prompt 輸出到檔案，集中在 backend/logs/llm 目錄 ---
+
+def call_gemini_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
+    """使用 Gemini 2.5 Pro 進行策略辨識（返回解析後 dict 或 None）。"""
+    if not settings.GEMINI_API_KEY:
+        return None
+    
+    # 構建 prompt，將角色設定併入輸入內容
+    base_prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
+    
+    # 將角色設定併入輸入 prompt（與其他模型不同）
+    full_prompt = (
+        "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only.\n\n"
+        + base_prompt
+    )
+    
+    if settings.LLM_LOG_PROMPT:
+        try:
+            print("[LLM PROMPT - Gemini IDENT]".ljust(24, ' '), "\n" + full_prompt)
+            _write_prompt_file(full_prompt, provider="gemini_ident")
+        except Exception:
+            pass
+    
+    client = _ensure_gemini_client()
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=full_prompt
+        )
+        # 原始回應
+        print("resp", resp)
+        content = resp.text
+        print("content", content)
+        
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - Gemini IDENT]".ljust(28, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="gemini_ident_resp")
+            except Exception:
+                pass
+        
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - Gemini IDENT]".ljust(28, ' '), parsed)
+            except Exception:
+                pass
+        return parsed
+    except Exception as e:
+        import traceback
+        print("Gemini call failed:", e)
+        traceback.print_exc()
+        return None
+
+
+def call_anthropic_for_identify(strategy_catalog: dict, history: list[dict], include_reasoning: bool = True) -> Optional[dict]:
+    """使用 Claude Sonnet 3.7 進行策略辨識（返回解析後 dict 或 None）。"""
+    if not settings.ANTHROPIC_API_KEY:
+        return None
+    
+    # 構建 prompt，將角色設定併入輸入內容
+    base_prompt = _build_identify_prompt(strategy_catalog, history, include_reasoning=include_reasoning)
+    
+    # 將角色設定併入輸入 prompt（與其他模型不同）
+    full_prompt = (
+        "You are an RPS observer. Infer the most likely strategies for P1 and P2 from the catalog and history. Respond with JSON only.\n\n"
+        + base_prompt
+    )
+    
+    if settings.LLM_LOG_PROMPT:
+        try:
+            print("[LLM PROMPT - Anthropic IDENT]".ljust(26, ' '), "\n" + full_prompt)
+            _write_prompt_file(full_prompt, provider="anthropic_ident")
+        except Exception:
+            pass
+    
+    client = _ensure_anthropic_client()
+    try:
+        message = client.messages.create(
+            model="claude-3-7-sonnet-20250219",
+            max_tokens=1000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": full_prompt
+                }
+            ]
+        )
+        # 原始回應
+        print("resp", message)
+        
+        # 從回應中提取內容
+        content = None
+        if message.content and len(message.content) > 0:
+            # Claude 的回應結構是 content[0].text
+            content = message.content[0].text
+        
+        print("content", content)
+        
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM RESPONSE - Anthropic IDENT]".ljust(30, ' '), "\n" + (content or "<empty>"))
+                _write_prompt_file(content or "", provider="anthropic_ident_resp")
+            except Exception:
+                pass
+        
+        parsed = _parse_identify_json(content or "")
+        if settings.LLM_LOG_PROMPT:
+            try:
+                print("[LLM PARSED   - Anthropic IDENT]".ljust(30, ' '), parsed)
+            except Exception:
+                pass
+        return parsed
+    except Exception as e:
+        import traceback
+        print("Anthropic call failed:", e)
+        traceback.print_exc()
+        return None
+
+
+def identify_from_history(strategy_catalog: dict, history: list[dict], model: Optional[str] = None, include_reasoning: bool = True) -> Optional[dict]:
+    """對歷史進行 LLM 辨識，並統一輸出格式。
+    返回 dict：
+    {
+        s1_code, s2_code, s1_name, s2_name,
+        confidence, reasoning,
+        s1_probs: {code: prob}, s2_probs: {code: prob}
+    }
+    失敗時返回 None。
+    """
+    selected = (model or '').lower().strip()
+    parsed: Optional[dict] = None
+
+    # 嚴格模式：只使用前端指定，或只使用環境指定，不做跨提供者嘗試
+    if selected in ("deepseek-official", "deepseek-reasoner"):
+        print("call_deepseek_for_identify")
+        parsed = call_deepseek_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    elif selected in ("deepseek", "deepseek-r1", "deepseek-r1-free", "openrouter"):
+        print("call_openrouter_for_identify")
+        parsed = call_openrouter_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    elif selected in ("o3", "o3-mini"):
+        parsed = call_openai_o3_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    elif selected in ("4o-mini", "gpt-4o-mini", "openai", "gpt"):
+        parsed = call_openai_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    elif selected in ("gemini", "gemini-2.5-pro", "gemini-2.5"):
+        print("call_gemini_for_identify")
+        parsed = call_gemini_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    elif selected in ("claude", "claude-3-7-sonnet", "claude-3-7-sonnet-20250219"):
+        print("call_anthropic_for_identify")
+        parsed = call_anthropic_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+    else:
+        provider = (settings.MODEL_PROVIDER or "").lower().strip()
+        if provider in ("openai", "gpt-4o-mini"):
+            parsed = call_openai_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+        elif provider in ("deepseek-official", "deepseek-reasoner"):
+            parsed = call_deepseek_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+        elif provider in ("openrouter", "deepseek"):
+            parsed = call_openrouter_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+        elif provider in ("gemini", "gemini-2.5-pro", "gemini-2.5"):
+            parsed = call_gemini_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+        elif provider in ("claude", "claude-3-7-sonnet", "claude-3-7-sonnet-20250219"):
+            parsed = call_anthropic_for_identify(strategy_catalog, history, include_reasoning=include_reasoning)
+
+    if not parsed:
+        return None
+
+    # 將 {guess_s1, guess_s2, confidence, reasoning} 正規化為最終輸出
+    s1_code = (parsed.get('guess_s1') or '').strip()
+    s2_code = (parsed.get('guess_s2') or '').strip()
+    confidence = float(parsed.get('confidence') or 0.6)
+    reasoning = (parsed.get('reasoning') or '').strip() or None
+
+    codes = list(strategy_catalog.keys())
+    s1_probs = {c: (1.0 if c == s1_code else 0.0) for c in codes} if s1_code else {c: 0.0 for c in codes}
+    s2_probs = {c: (1.0 if c == s2_code else 0.0) for c in codes} if s2_code else {c: 0.0 for c in codes}
+
+    result = {
+        's1_code': s1_code or None,
+        's2_code': s2_code or None,
+        's1_name': (strategy_catalog.get(s1_code, {}) or {}).get('name') if s1_code else None,
+        's2_name': (strategy_catalog.get(s2_code, {}) or {}).get('name') if s2_code else None,
+        'confidence': max(0.0, min(1.0, confidence)),
+        'reasoning': reasoning,
+        's1_probs': s1_probs,
+        's2_probs': s2_probs,
+    }
+    return result
+
+def decide_next_move(history, k_window=5, belief=None):
+    # Simple heuristic placeholder; replace with real LLM policy
+    if not history: return 0, "No history; default ROCK."
+    opp_moves = [opp for _, opp in history[-(k_window or len(history)):]]
+    top = max(set(opp_moves), key=opp_moves.count)
+    move = (top + 1) % 3
+    return move, "Counter most frequent opponent move."
+
+# --- debug：將 prompt 輸出到檔案，集中在 backend/logs/llm 目錄 ---
 def _write_prompt_file(prompt: str, provider: str = "unknown") -> None:
     try:
         base_dir = settings.LLM_LOG_DIR or "logs/llm"
@@ -463,66 +654,3 @@ def _write_prompt_file(prompt: str, provider: str = "unknown") -> None:
         pass
 
 
-
-# 主要的預測函數，加入 model 參數以切換
-
-def estimate_payoff(description_s1: str, description_s2: str, prompt_style: Optional[str] = None, model: Optional[str] = None):
-    """根據策略描述預測對戰結果，支援 model 選擇（'deepseek' 或 '4o-mini'），預設遵循環境設定。"""
-    # 沒有任何外部金鑰時，直接 fallback
-    has_openai = bool(settings.OPENAI_API_KEY)
-    has_openrouter = bool(settings.OPENROUTER_API_KEY)
-    if not (has_openai or has_openrouter):
-        print("⚠️ 警告: 未設定任何 API 金鑰，使用備用預測邏輯")
-        return fallback_prediction(description_s1, description_s2)
-
-    # 依使用者指定或預設提供商選擇
-    selected = (model or '').lower().strip()
-    try:
-        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"):
-            return call_openrouter_deepseek(description_s1, description_s2, prompt_style)
-        if selected in ("4o-mini", "gpt-4o-mini", "openai"):
-            return call_openai_for_prediction(description_s1, description_s2, prompt_style)
-
-        # 未指定時，依環境走
-        provider = (settings.MODEL_PROVIDER or "").lower()
-        if provider in ("openai", "gpt-4o-mini") and has_openai:
-            return call_openai_for_prediction(description_s1, description_s2, prompt_style)
-        if provider in ("openrouter", "deepseek") and has_openrouter:
-            return call_openrouter_deepseek(description_s1, description_s2, prompt_style)
-
-        # 任何情況不可用則 fallback
-        return fallback_prediction(description_s1, description_s2)
-    except Exception as e:
-        print(f"❌ LLM 調用失敗，使用備用邏輯: {e}")
-        return fallback_prediction(description_s1, description_s2)
-
-
-def fallback_prediction(description_s1: str, description_s2: str) -> dict:
-    """當 OpenAI API 失敗時的備用預測"""
-    # 使用原有的邏輯作為備用
-    s1_features = analyze_strategy(description_s1)
-    s2_features = analyze_strategy(description_s2)
-    prediction = predict_matchup(s1_features, s2_features)
-    confidence = estimate_confidence(s1_features, s2_features, prediction)
-    
-    return {
-        "win": prediction['win'],
-        "loss": prediction['loss'], 
-        "draw": prediction['draw'],
-        "confidence": round(confidence, 3),
-        "reasoning": "使用備用分析邏輯"
-    }
-
-
-def decide_next_move(history, k_window=5, belief=None):
-    # Simple heuristic placeholder; replace with real LLM policy
-    if not history: return 0, "No history; default ROCK."
-    opp_moves = [opp for _, opp in history[-(k_window or len(history)):]]
-    top = max(set(opp_moves), key=opp_moves.count)
-    move = (top + 1) % 3
-    return move, "Counter most frequent opponent move."
-
-# for test
-if __name__ == "__main__":
-    result = call_openrouter_deepseek("固定出石頭", "隨機出拳")
-    print(result)

@@ -10,7 +10,6 @@ FastAPI 主應用程式入口點
 API 端點：
 - GET /health - 健康檢查
 - POST /api/v1/simulate - 策略模擬
-- POST /api/v1/observer/predict - 觀察者預測
 - POST /api/v1/player/act - 玩家行動
 - POST /api/v1/evaluate - 評估指標
 - GET /api/v1/strategies/all - 獲取所有策略
@@ -26,6 +25,7 @@ from .api.v1.routes_observer import router as observer_router
 from .api.v1.routes_player import router as player_router
 from .api.v1.routes_eval import router as eval_router
 from .api.v1.routes_strategies import router as strategies_router
+from .api.v1.routes_admin import router as admin_router
 
 app = FastAPI(title="RPS Belief API", version="1.0.0")
 
@@ -46,3 +46,4 @@ app.include_router(observer_router, prefix=settings.API_PREFIX)
 app.include_router(player_router, prefix=settings.API_PREFIX)
 app.include_router(eval_router, prefix=settings.API_PREFIX)
 app.include_router(strategies_router, prefix=settings.API_PREFIX)
+app.include_router(admin_router, prefix=settings.API_PREFIX)
