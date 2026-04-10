@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this software or find this work useful, please cite it using the metadata below."
+type: software
+title: "RPS Observer"
+authors:
+  - family-names: Wang
+    given-names: Jerry
+  - family-names: Liu
+    given-names: Ting Yiu
+repository-code: https://github.com/folivora-hi/rps_observer
+abstract: >
+  RPS Observer is an interactive framework for evaluating whether LLMs can demonstrate
+  genuine strategic understanding. Using Rock-Paper-Scissors as a controlled testbed,
+  the LLM acts as an Observer — watching game rounds and identifying hidden strategies —
+  enabling a clean probe of theory-of-mind capabilities. Includes 19 strategies
+  (16 static, 3 dynamic), three evaluation metrics (CE, Brier, EV Loss), and a
+  unified Union Loss score.
+keywords:
+  - large language models
+  - theory of mind
+  - game theory
+  - rock paper scissors
+  - evaluation framework
+  - strategy identification
+preferred-citation:
+  type: article
+  title: "Observer, Not Player: Simulating Theory of Mind in LLMs through Game Observation"
+  authors:
+    - family-names: Wang
+      given-names: Jerry
+    - family-names: Liu
+      given-names: Ting Yiu
+  year: 2025
+  url: https://arxiv.org/abs/2512.19210
+  identifiers:
+    - type: url
+      value: https://arxiv.org/abs/2512.19210
+      description: arXiv preprint
