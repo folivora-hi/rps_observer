@@ -25,6 +25,7 @@ from .api.v1.routes_observer import router as observer_router
 from .api.v1.routes_player import router as player_router
 from .api.v1.routes_eval import router as eval_router
 from .api.v1.routes_strategies import router as strategies_router
+from .api.v1.routes_admin import router as admin_router
 
 app = FastAPI(title="RPS Belief API", version="1.0.0")
 
@@ -45,3 +46,4 @@ app.include_router(observer_router, prefix=settings.API_PREFIX)
 app.include_router(player_router, prefix=settings.API_PREFIX)
 app.include_router(eval_router, prefix=settings.API_PREFIX)
 app.include_router(strategies_router, prefix=settings.API_PREFIX)
+app.include_router(admin_router, prefix=settings.API_PREFIX)

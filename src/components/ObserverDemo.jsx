@@ -214,7 +214,11 @@ const ObserverDemo = () => {
             >
               <option value="o3">GPT o3 (OpenAI)</option>
               <option value="gpt-4o-mini">GPT 4o-mini (OpenAI)</option>
+              <option value="deepseek-reasoner">DeepSeek Reasoner (Official)</option>
+              {/* <option value="deepseek-official">DeepSeek Chat (Official)</option> */}
               <option value="deepseek">DeepSeek (OpenRouter)</option>
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro (Google)</option>
+              <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet (Anthropic)</option>
             </select>
           </div>
           <div>

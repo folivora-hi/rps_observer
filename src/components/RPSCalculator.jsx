@@ -145,7 +145,10 @@ const RPSCalculator = () => {
   const normalizeLoss = (loss, allLosses) => {
     const min = Math.min(...allLosses);
     const max = Math.max(...allLosses);
-    return max === min ? 0.5 : (loss - min) / (max - min);
+    // 確保結果在 [0,1] 範圍內
+    if (max === min) return 0.5;
+    const normalized = (loss - min) / (max - min);
+    return Math.max(0, Math.min(1, normalized)); // 強制限制在 [0,1]
   };
 
   // --- 新增：先計算當前的分佈與 loss ---
@@ -328,6 +331,17 @@ const RPSCalculator = () => {
                   const evLossForCell = computeEVLoss(t, predDist);
                   const normalizedEVLossForCell = evLossForCell / 1.0; // 固定上界標準化
                   const normalizedUnionLossForCell = normalizeLoss(loss, allLosses); // 相對 min-max 標準化
+                  
+                  // 調試信息：檢查標準化計算
+                  if (normalizedUnionLossForCell > 1 || normalizedUnionLossForCell < 0) {
+                    console.log('標準化異常:', {
+                      k1, k2,
+                      loss,
+                      allLossesMin: Math.min(...allLosses),
+                      allLossesMax: Math.max(...allLosses),
+                      normalized: normalizedUnionLossForCell
+                    });
+                  }
                   
                   // 根據模式選擇顏色
                   let hue, bg;

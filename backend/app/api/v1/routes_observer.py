@@ -11,6 +11,7 @@
 from fastapi import APIRouter, HTTPException
 import os
 from fastapi.responses import StreamingResponse
+from typing import Optional
 from ...schemas.observer import (
     ObserverRunReq, ObserverRunResp, RoundRecord, StrategyProbs
 )
@@ -22,23 +23,22 @@ from ...domain.strategies import (
     resolve_dist, iterate_dists
 )
 from ...core.config import settings
-from ...domain.metrics import compute_union_loss
+from ...domain.metrics import (
+    compute_union_loss,
+    normalize_loss,
+    compute_all_losses_for_matrix,
+    compute_cross_entropy_loss,
+    compute_brier_score,
+    compute_ev_loss,
+)
 from dotenv import load_dotenv
 load_dotenv()
 
 router = APIRouter(prefix="/observer", tags=["observer"])
 
 
-@router.post("/run", response_model=ObserverRunResp)
-def observer_run(req: ObserverRunReq):
-    all_strategies = get_all_strategies()
-    if req.true_strategy1 not in all_strategies or req.true_strategy2 not in all_strategies:
-        raise HTTPException(status_code=400, detail="真實策略不存在")
-
-    strategy_names = get_strategy_names()
-    codes = list(all_strategies.keys())
-    matrix = {s1: {s2: calculate_matchup(s1, s2) for s2 in codes} for s1 in codes}
-
+# ---- Shared helpers to avoid duplication between /run and /stream ----
+def build_strategy_catalog() -> dict:
     strategy_catalog = {}
     for k, v in BASE_STRATEGIES.items():
         strategy_catalog[k] = {
@@ -53,38 +53,107 @@ def observer_run(req: ObserverRunReq):
                 'name': v['name'],
                 'rule': v['rule'],
             }
+    return strategy_catalog
 
-    def current_dists(k1: str, k2: str):
-        is_base1 = k1 in BASE_STRATEGIES
-        is_base2 = k2 in BASE_STRATEGIES
-        if is_base1 and is_base2:
-            return BASE_STRATEGIES[k1], BASE_STRATEGIES[k2]
-        if is_base1 and not is_base2:
-            return BASE_STRATEGIES[k1], resolve_dist(k2, BASE_STRATEGIES[k1])
-        if not is_base1 and is_base2:
-            return resolve_dist(k1, BASE_STRATEGIES[k2]), BASE_STRATEGIES[k2]
-        it = iterate_dists(k1, k2, 50)
-        return it['s1'], it['s2']
 
+def current_dists_shared(k1: str, k2: str):
+    is_base1 = k1 in BASE_STRATEGIES
+    is_base2 = k2 in BASE_STRATEGIES
+    if is_base1 and is_base2:
+        return BASE_STRATEGIES[k1], BASE_STRATEGIES[k2]
+    if is_base1 and not is_base2:
+        return BASE_STRATEGIES[k1], resolve_dist(k2, BASE_STRATEGIES[k1])
+    if not is_base1 and is_base2:
+        return resolve_dist(k1, BASE_STRATEGIES[k2]), BASE_STRATEGIES[k2]
+    it = iterate_dists(k1, k2, 50)
+    return it['s1'], it['s2']
+
+
+def sample_move_shared(dist):
     import random
-    def sample_move(dist):
-        return random.choices([0,1,2], weights=[dist['rock'], dist['paper'], dist['scissors']])[0]
+    return random.choices([0, 1, 2], weights=[dist['rock'], dist['paper'], dist['scissors']])[0]
 
-    def resolve_provider(model: str | None) -> str | None:
-        selected = (model or "").lower().strip()
-        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): return "openrouter"
-        if selected in ("4o-mini", "gpt-4o-mini", "openai", "o3", "o3-mini"): return "openai"
-        return None
 
-    def ensure_ident_available_for(provider: str | None):
-        if provider == "openai":
-            if not settings.OPENAI_API_KEY:
-                raise HTTPException(status_code=503, detail="LLM unavailable: OPENAI_API_KEY missing")
-        elif provider == "openrouter":
-            if not os.getenv("OPENROUTER_API_KEY"):
-                raise HTTPException(status_code=503, detail="LLM unavailable: OPENROUTER_API_KEY missing")
-        else:
-            raise HTTPException(status_code=503, detail="LLM unavailable: no valid provider (set MODEL_PROVIDER or pass model)")
+def resolve_provider_shared(model: str | None) -> str | None:
+    selected = (model or "").lower().strip()
+    if selected in ("deepseek-official", "deepseek-reasoner"):
+        return "deepseek-official"
+    if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"):
+        return "openrouter"
+    if selected in ("4o-mini", "40-mini", "gpt-4o-mini", "openai", "o3", "o3-mini"):
+        return "openai"
+    if selected in ("gemini", "gemini-2.5-pro", "gemini-2.5"):
+        return "gemini"
+    if selected in ("claude", "claude-3-7-sonnet", "claude-3-7-sonnet-20250219"):
+        return "anthropic"
+    return None
+
+
+def ensure_ident_available_for_shared(provider: str | None):
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise HTTPException(status_code=503, detail="LLM unavailable: OPENAI_API_KEY missing")
+    elif provider == "openrouter":
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise HTTPException(status_code=503, detail="LLM unavailable: OPENROUTER_API_KEY missing")
+    elif provider == "deepseek-official":
+        if not settings.DEEPSEEK_API_KEY:
+            raise HTTPException(status_code=503, detail="LLM unavailable: DEEPSEEK_API_KEY missing")
+    elif provider == "gemini":
+        if not settings.GEMINI_API_KEY:
+            raise HTTPException(status_code=503, detail="LLM unavailable: GEMINI_API_KEY missing")
+    elif provider == "anthropic":
+        if not settings.ANTHROPIC_API_KEY:
+            raise HTTPException(status_code=503, detail="LLM unavailable: ANTHROPIC_API_KEY missing")
+    else:
+        raise HTTPException(status_code=503, detail="LLM unavailable: no valid provider (set MODEL_PROVIDER or pass model)")
+
+
+def build_hist_json(history: list[tuple[int, int, int]], history_limit: int | None):
+    base_round = len(history) - len(history) + 1
+    # history 是 (m1, m2, res)
+    hist_json = [
+        {"round": base_round + i, "move1": mm1, "move2": mm2, "result": rr}
+        for i, (mm1, mm2, rr) in enumerate(history)
+    ]
+    if history_limit and history_limit > 0:
+        hist_json = hist_json[-int(history_limit):]
+    return hist_json
+
+
+def compute_losses(true_dist: dict, pred_dist: dict, matrix: dict):
+    ce_loss = compute_cross_entropy_loss(true_dist, pred_dist)
+    brier_loss = compute_brier_score(true_dist, pred_dist)
+    ev_loss = compute_ev_loss(true_dist, pred_dist)
+    union_loss = compute_union_loss(true_dist, pred_dist)
+
+    all_losses = compute_all_losses_for_matrix(matrix, pred_dist)
+    normalized_ce_loss = normalize_loss(ce_loss, all_losses['ce_losses'])
+    normalized_ev_loss = ev_loss / 1.0
+    normalized_union_loss = (float(normalized_ce_loss) + float(brier_loss) + float(normalized_ev_loss)) / 3.0
+
+    return {
+        'ce_loss': ce_loss,
+        'brier_loss': brier_loss,
+        'ev_loss': ev_loss,
+        'union_loss': union_loss,
+        'normalized_ce_loss': normalized_ce_loss,
+        'normalized_ev_loss': normalized_ev_loss,
+        'normalized_union_loss': normalized_union_loss,
+    }
+
+
+@router.post("/run", response_model=ObserverRunResp)
+def observer_run(req: ObserverRunReq):
+    all_strategies = get_all_strategies()
+    if req.true_strategy1 not in all_strategies or req.true_strategy2 not in all_strategies:
+        raise HTTPException(status_code=400, detail="真實策略不存在")
+
+    strategy_names = get_strategy_names()
+    codes = list(all_strategies.keys())
+    matrix = {s1: {s2: calculate_matchup(s1, s2) for s2 in codes} for s1 in codes}
+
+    strategy_catalog = build_strategy_catalog()
 
     k1_true, k2_true = req.true_strategy1, req.true_strategy2
     history = []
@@ -93,39 +162,49 @@ def observer_run(req: ObserverRunReq):
     losses_series: list[float] = []
 
     for r in range(1, int(req.rounds) + 1):
-        dist1, dist2 = current_dists(k1_true, k2_true)
-        m1 = sample_move(dist1)
-        m2 = sample_move(dist2)
+        dist1, dist2 = current_dists_shared(k1_true, k2_true)
+        m1 = sample_move_shared(dist1)
+        m2 = sample_move_shared(dist2)
         res = beats(m1, m2)
         history.append((m1, m2, res))
 
         guess_s1_code = None
         guess_s2_code = None
         union_loss = None
+        normalized_union_loss = None  # 初始化正規化 loss
+        # 其他損失初始化
+        ce_loss = None
+        brier_loss = None
+        ev_loss = None
+        normalized_ce_loss = None
+        # 不提供 Brier 的 normalized
+        normalized_ev_loss = None
         delta = None
         extra_conf = None
         extra_reason = None
         hist_used = None
 
         if r > (req.warmup_rounds or 0):
+            print("round", r)
             hw = history
             try:
                 base_round = len(history) - len(hw) + 1
-                hist_json = [
-                    {"round": base_round + i, "move1": mm1, "move2": mm2, "result": rr}
-                    for i, (mm1, mm2, rr) in enumerate(hw)
-                ]
-                if req.history_limit and req.history_limit > 0:
-                    hist_json = hist_json[-int(req.history_limit):]
+                hist_json = build_hist_json(hw, req.history_limit)
                 hist_used = len(hist_json)
                 include_reason = (r % (req.reasoning_interval or 10) == 0 or r == req.rounds)
-                provider = resolve_provider(req.model)
-                ensure_ident_available_for(provider)
+                provider = resolve_provider_shared(req.model)
+                print(f"model: {req.model}, provider: {provider}")
+                ensure_ident_available_for_shared(provider)
                 ident = identify_from_history(strategy_catalog, hist_json, req.model, include_reasoning=include_reason)
-            except Exception:
+                # print("ident1", ident)
+            except Exception as e:
+                print("error", e)
                 ident = None
+                err_msg = str(e)
+            # print("ident2", ident)
 
             if ident:
+                # 兼容：s1_probs/s2_probs 可能是 dict，也可能是單一代碼（字串）。
                 s1_code = ident.get("s1_code") or None
                 s2_code = ident.get("s2_code") or None
                 s1_probs_raw = ident.get("s1_probs")
@@ -141,6 +220,7 @@ def observer_run(req: ObserverRunReq):
                     elif isinstance(s2_probs_raw, str) and s2_probs_raw:
                         s2_code = s2_probs_raw
 
+                # 只回傳單一代碼（不再輸出 probs 至前端）
                 guess_s1_code = s1_code or None
                 guess_s2_code = s2_code or None
                 extra_conf = float(ident.get("confidence") or 0.6)
@@ -149,17 +229,44 @@ def observer_run(req: ObserverRunReq):
                     if (r % (req.reasoning_interval or 50) == 0 or r == req.rounds)
                     else None
                 )
+            else:
+                # 輕量降級：無辨識結果時，當輪不報錯，僅回傳空猜測
+                guess_s1_code = None
+                guess_s2_code = None
+                extra_conf = None
+                extra_reason = None
 
-                true_dist = matrix[k1_true][k2_true]
-                if guess_s1_code and guess_s2_code:
-                    pred_dist = matrix[guess_s1_code][guess_s2_code]
-                    union_loss = compute_union_loss(true_dist, pred_dist)
-                    delta = None if r == (req.warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
-                    last_union_loss = union_loss
-                    try:
-                        losses_series.append(float(union_loss))
-                    except Exception:
-                        pass
+            # 計算 loss 和 delta（移到這裡，確保每次都會計算）
+            true_dist = matrix[k1_true][k2_true]
+            best_pair = (guess_s1_code, guess_s2_code)
+            if best_pair[0] and best_pair[1]:
+                pred_dist = matrix[best_pair[0]][best_pair[1]]
+                # 計算四種損失與 normalized（共用）
+                losses = compute_losses(true_dist, pred_dist, matrix)
+                ce_loss = losses['ce_loss']
+                brier_loss = losses['brier_loss']
+                ev_loss = losses['ev_loss']
+                union_loss = losses['union_loss']
+                normalized_ce_loss = losses['normalized_ce_loss']
+                normalized_ev_loss = losses['normalized_ev_loss']
+                normalized_union_loss = losses['normalized_union_loss']
+                
+                delta = None if r == (req.warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
+                last_union_loss = union_loss
+                try:
+                    losses_series.append(float(union_loss))
+                except Exception:
+                    pass
+            else:
+                union_loss = None
+                normalized_union_loss = None
+                ce_loss = None
+                brier_loss = None
+                ev_loss = None
+                normalized_ce_loss = None
+                # 不提供 Brier 的 normalized
+                normalized_ev_loss = None
+                delta = None
 
         per_round.append(RoundRecord(
             round=r,
@@ -168,19 +275,40 @@ def observer_run(req: ObserverRunReq):
             result=res,
             guess_s1=guess_s1_code,
             guess_s2=guess_s2_code,
+            ce_loss=ce_loss,
+            brier_loss=brier_loss,
+            ev_loss=ev_loss,
             union_loss=union_loss,
+            normalized_ce_loss=normalized_ce_loss,
+            normalized_ev_loss=normalized_ev_loss,
+            normalized_union_loss=normalized_union_loss,  # 新增正規化 loss
             delta=delta,
             confidence=extra_conf,
             reasoning=extra_reason,
-            history_used=hist_used
+            history_used=(len(hist_json) if (r > (req.warmup_rounds or 0)) else None)
         ))
 
-    final_guess = {'s1': (per_round[-1].guess_s1 or ''), 's2': (per_round[-1].guess_s2 or '')}
+    # 獲取最後一輪的猜測
+    last_guess_s1 = None
+    last_guess_s2 = None
+    for record in reversed(per_round):
+        if record.guess_s1 is not None or record.guess_s2 is not None:
+            last_guess_s1 = record.guess_s1
+            last_guess_s2 = record.guess_s2
+            break
+    
+    final_guess = {'s1': (last_guess_s1 or ''), 's2': (last_guess_s2 or '')}
     trend = {}
     if losses_series:
         trend['last'] = losses_series[-1]
         trend['min'] = min(losses_series)
         trend['avg_5'] = sum(losses_series[-5:]) / min(5, len(losses_series))
+        
+        # 添加最後一輪的正規化 loss
+        if per_round:
+            last_record = per_round[-1]
+            if last_record.normalized_union_loss is not None:
+                trend['last_normalized'] = last_record.normalized_union_loss
 
     return ObserverRunResp(
         model=req.model,
@@ -197,7 +325,7 @@ def observer_run(req: ObserverRunReq):
 
 
 @router.get("/stream")
-def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 50, warmup_rounds: int = 10, history_limit: int | None = None, reasoning_interval: int | None = 10, model: str | None = "deepseek"):
+def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 50, warmup_rounds: int = 10, history_limit: Optional[int] = None, reasoning_interval: Optional[int] = 10, model: Optional[str] = "deepseek"):
     """以 SSE 逐輪推送辨識與結果，便於前端即時展示。GET 參數對應 /observer/run。"""
     all_strategies = get_all_strategies()
     if true_strategy1 not in all_strategies or true_strategy2 not in all_strategies:
@@ -242,12 +370,23 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
 
     def resolve_provider(model: str | None) -> str | None:
         selected = (model or "").lower().strip()
-        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): return "openrouter"
-        if selected in ("4o-mini", "gpt-4o-mini", "openai", "o3", "o3-mini"): return "openai"
-        # from ...core.config import settings
-        # prov = (settings.MODEL_PROVIDER or "").lower().strip()
-        # if prov in ("openrouter", "deepseek"): return "openrouter"
-        # if prov in ("openai", "gpt-4o-mini"): return "openai"
+        print(f"stream resolve_provider: model='{model}', selected='{selected}'")
+        if selected in ("deepseek-official", "deepseek-reasoner"): 
+            print(f"  -> returning deepseek-official")
+            return "deepseek-official"
+        if selected in ("deepseek", "deepseek-r1", "deepseek-r1-free"): 
+            print(f"  -> returning openrouter")
+            return "openrouter"
+        if selected in ("4o-mini", "gpt-4o-mini", "openai", "o3", "o3-mini"): 
+            print(f"  -> returning openai")
+            return "openai"
+        if selected in ("gemini", "gemini-2.5-pro", "gemini-2.5"): 
+            print(f"  -> returning gemini")
+            return "gemini"
+        if selected in ("claude", "claude-3-7-sonnet", "claude-3-7-sonnet-20250219"): 
+            print(f"  -> returning anthropic")
+            return "anthropic"
+        print(f"  -> returning None (no match)")
         return None
 
     def ensure_ident_available_for(provider: str | None):
@@ -258,6 +397,15 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
         elif provider == "openrouter":
             if not os.getenv("OPENROUTER_API_KEY"):
                 raise HTTPException(status_code=503, detail="LLM unavailable: OPENROUTER_API_KEY missing")
+        elif provider == "deepseek-official":
+            if not settings.DEEPSEEK_API_KEY:
+                raise HTTPException(status_code=503, detail="LLM unavailable: DEEPSEEK_API_KEY missing")
+        elif provider == "gemini":
+            if not settings.GEMINI_API_KEY:
+                raise HTTPException(status_code=503, detail="LLM unavailable: GEMINI_API_KEY missing")
+        elif provider == "anthropic":
+            if not settings.ANTHROPIC_API_KEY:
+                raise HTTPException(status_code=503, detail="LLM unavailable: ANTHROPIC_API_KEY missing")
         else:
             raise HTTPException(status_code=503, detail="LLM unavailable: no valid provider (set MODEL_PROVIDER or pass model)")
 
@@ -274,6 +422,7 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
         prev_guess_s1 = None
         prev_guess_s2 = None
         losses_series: list[float] = []
+        normalized_losses_series: list[float] = []  # 新增：追蹤正規化 loss
         EARLY_STOP_N = 15
 
         for r in range(1, int(rounds) + 1):
@@ -286,6 +435,14 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             guess_s1 = None
             guess_s2 = None
             union_loss = None
+            normalized_union_loss = None  # 初始化正規化 loss
+            # 其他損失初始化
+            ce_loss = None
+            brier_loss = None
+            ev_loss = None
+            normalized_ce_loss = None
+            # 不提供 Brier 的 normalized
+            normalized_ev_loss = None
             delta = None
             extra_conf = None
             extra_reason = None
@@ -351,18 +508,42 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                     extra_conf = None
                     extra_reason = None
 
+                # 計算 loss 和 delta（移到這裡，確保每次都會計算）
                 true_dist = matrix[k1_true][k2_true]
                 if best_pair[0] and best_pair[1]:
                     pred_dist = matrix[best_pair[0]][best_pair[1]]
+                    # 計算四種損失
+                    ce_loss = compute_cross_entropy_loss(true_dist, pred_dist)
+                    brier_loss = compute_brier_score(true_dist, pred_dist)
+                    ev_loss = compute_ev_loss(true_dist, pred_dist)
                     union_loss = compute_union_loss(true_dist, pred_dist)
+
+                    # 計算四種損失與 normalized（共用）
+                    losses = compute_losses(true_dist, pred_dist, matrix)
+                    ce_loss = losses['ce_loss']
+                    brier_loss = losses['brier_loss']
+                    ev_loss = losses['ev_loss']
+                    union_loss = losses['union_loss']
+                    normalized_ce_loss = losses['normalized_ce_loss']
+                    normalized_ev_loss = losses['normalized_ev_loss']
+                    normalized_union_loss = losses['normalized_union_loss']
+                    
                     delta = None if r == (warmup_rounds or 0) + 1 else (union_loss - last_union_loss)
                     last_union_loss = union_loss
                     try:
                         losses_series.append(float(union_loss))
+                        normalized_losses_series.append(float(normalized_union_loss)) # 新增：追蹤正規化 loss
                     except Exception:
                         pass
                 else:
                     union_loss = None
+                    normalized_union_loss = None
+                    ce_loss = None
+                    brier_loss = None
+                    ev_loss = None
+                    normalized_ce_loss = None
+                    # 不提供 Brier 的 normalized
+                    normalized_ev_loss = None
                     delta = None
 
             # 紀錄本輪最後的猜測（以單一代碼字串；即使在 warmup，也保留 None）
@@ -378,7 +559,14 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                 'result': res,
                 'guess_s1': last_guess_s1,
                 'guess_s2': last_guess_s2,
+                'ce_loss': ce_loss,
+                'brier_loss': brier_loss,
+                'ev_loss': ev_loss,
                 'union_loss': union_loss,
+                'normalized_ce_loss': normalized_ce_loss,
+                # 不輸出 normalized_brier_loss
+                'normalized_ev_loss': normalized_ev_loss,
+                'normalized_union_loss': normalized_union_loss,  # 新增正規化 loss
                 'delta': delta,
                 'confidence': extra_conf,
                 'reasoning': extra_reason,
@@ -407,6 +595,9 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
                     trend['last'] = losses_series[-1]
                     trend['min'] = min(losses_series)
                     trend['avg_5'] = sum(losses_series[-5:]) / min(5, len(losses_series))
+                    # 添加最後一輪的正規化 loss
+                    if normalized_losses_series:
+                        trend['last_normalized'] = normalized_losses_series[-1]
                 final_guess = {'s1': curr_guess_s1 or '', 's2': curr_guess_s2 or ''}
                 final_payload = {
                     'model': model,
@@ -431,6 +622,9 @@ def observer_run_stream(true_strategy1: str, true_strategy2: str, rounds: int = 
             trend['last'] = losses_series[-1]
             trend['min'] = min(losses_series)
             trend['avg_5'] = sum(losses_series[-5:]) / min(5, len(losses_series))
+            # 添加最後一輪的正規化 loss
+            if normalized_losses_series:
+                trend['last_normalized'] = normalized_losses_series[-1]
         yield "event: final\n" + "data: " + json.dumps({
             'model': model,
             'true_strategy1': k1_true,

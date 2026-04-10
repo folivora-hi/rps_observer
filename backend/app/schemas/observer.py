@@ -33,7 +33,17 @@ class RoundRecord(BaseModel):
     # 串流輸出現改為單一代碼字串
     guess_s1: Optional[str] = None
     guess_s2: Optional[str] = None
+
+    # 各種損失
+    ce_loss: Optional[float] = None
+    brier_loss: Optional[float] = None
+    ev_loss: Optional[float] = None
     union_loss: Optional[float] = None
+
+    # 各種損失（標準化）
+    normalized_ce_loss: Optional[float] = None
+    normalized_ev_loss: Optional[float] = None
+    normalized_union_loss: Optional[float] = None  # 新增：正規化的 union_loss
     delta: Optional[float] = None      # 相較上一輪 union_loss 的變化（負值=變好）
     confidence: Optional[float] = None
     reasoning: Optional[str] = None    # 可截斷簡短摘要
